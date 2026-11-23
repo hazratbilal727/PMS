@@ -56,9 +56,14 @@ export interface POSDraftItem {
   quantity: number;
 }
 
+export type QuickActionIntent = 'add-medicine' | 'new-po' | 'new-rx' | null;
+
 interface PMSContextValue {
   activeRoute: NavRoute;
   setActiveRoute: (route: NavRoute) => void;
+  quickActionIntent: QuickActionIntent;
+  triggerQuickAction: (route: NavRoute, intent: QuickActionIntent) => void;
+  clearQuickActionIntent: () => void;
   theme: 'light' | 'dark';
   toggleTheme: () => void;
   sidebarCollapsed: boolean;
@@ -111,6 +116,7 @@ interface PMSContextValue {
   addCustomer: (cust: Omit<Customer, 'id' | 'totalSpending' | 'totalVisits' | 'lastVisitDate' | 'createdAt'>) => Customer;
   updateCustomer: (id: string, patch: Partial<Customer>) => void;
   deleteCustomer: (id: string) => void;
+  recordCustomerPayment: (customerId: string, amount: number) => void;
 
   completeSale: (payload: {
     customerId: string;
@@ -124,6 +130,7 @@ interface PMSContextValue {
     prescriptionId?: string;
     notes?: string;
   }) => Sale;
+  updateSalePaymentStatus: (saleId: string, paymentStatus: PaymentStatus) => void;
 
   adjustStock: (payload: {
     medicineId: string;
@@ -139,13 +146,21 @@ interface PMSContextValue {
     toLocation: string;
   }) => void;
 
-  removeExpiredBatch: (medicineId: string, quantity: number, disposition: 'Expired Removal' | 'Supplier Return', notes: string) => void;
+  removeExpiredBatch: (
+    medicineId: string,
+    quantity: number,
+    disposition: 'Expired Removal' | 'Supplier Return',
+    notes: string
+  ) => void;
 
   createPurchaseOrder: (po: Omit<PurchaseOrder, 'id' | 'poNumber'>) => PurchaseOrder;
   receivePurchaseOrder: (poId: string) => void;
+  recordPurchasePayment: (poId: string, amount: number) => void;
+  deletePurchaseOrder: (poId: string) => void;
 
   addPrescription: (rx: Omit<Prescription, 'id' | 'prescriptionNumber'>) => void;
   updatePrescriptionStatus: (id: string, status: Prescription['status']) => void;
+  deletePrescription: (id: string) => void;
 
   processReturn: (payload: {
     saleId: string;
@@ -156,22 +171,29 @@ interface PMSContextValue {
   }) => void;
 
   addEmployee: (emp: Omit<Employee, 'id' | 'employeeCode'>) => void;
-  updateEmployeeStatus: (id: string, status: Employee['status']) => void;
+  updateEmployee: (id: string, patch: Partial<Employee>) => void;
+  deleteEmployee: (id: string) => void;
   updateAttendanceStatus: (employeeId: string, status: AttendanceRecord['status']) => void;
   toggleRolePermission: (role: StaffRole, key: keyof RolePermissionMatrix[StaffRole]) => void;
 
   addExpense: (exp: Omit<Expense, 'id' | 'voucherNumber'>) => void;
+  updateExpense: (id: string, patch: Partial<Expense>) => void;
+  deleteExpense: (id: string) => void;
 
   markNotificationRead: (id: string, read?: boolean) => void;
   markAllNotificationsRead: () => void;
+  deleteNotification: (id: string) => void;
+  clearReadNotifications: () => void;
 
   updateSettings: (patch: Partial<PharmacySettings>) => void;
+  resetDemoData: () => void;
 }
 
 const PMSContext = createContext<PMSContextValue | null>(null);
 
 export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [activeRoute, setActiveRoute] = useState<NavRoute>('dashboard');
+  const [quickActionIntent, setQuickActionIntent] = useState<QuickActionIntent>(null);
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
@@ -207,6 +229,13 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const dismissToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
+
+  const triggerQuickAction = useCallback((route: NavRoute, intent: QuickActionIntent) => {
+    setActiveRoute(route);
+    setQuickActionIntent(intent);
+  }, []);
+
+  const clearQuickActionIntent = useCallback(() => setQuickActionIntent(null), []);
 
   const logActivity = useCallback((module: string, action: string, details: string) => {
     setActivityLogs((prev) => [
@@ -249,7 +278,7 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const updateMedicine = useCallback(
     (id: string, patch: Partial<Medicine>) => {
       setMedicines((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
-      logActivity('Medicines', 'Updated Medicine', `Updated record ${id}`);
+      logActivity('Medicines', 'Updated Medicine', `Updated medicine record ${id}`);
       pushToast('Medicine details updated');
     },
     [logActivity, pushToast]
@@ -388,7 +417,20 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [pushToast]
   );
 
-  // POS Sale Completion (cross-module reactive)
+  const recordCustomerPayment = useCallback(
+    (customerId: string, amount: number) => {
+      setCustomers((prev) =>
+        prev.map((c) =>
+          c.id === customerId ? { ...c, outstandingBalance: Math.max(0, c.outstandingBalance - amount) } : c
+        )
+      );
+      logActivity('Customers', 'Credit Settlement', `Received Rs. ${amount} credit payment`);
+      pushToast('Customer balance updated');
+    },
+    [logActivity, pushToast]
+  );
+
+  // POS Sale Completion
   const completeSale = useCallback(
     (payload: {
       customerId: string;
@@ -425,7 +467,6 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       setSales((prev) => [newSale, ...prev]);
 
-      // Deduct inventory & log stock-out transactions
       const newTx: InventoryTransaction[] = [];
       setMedicines((prevMeds) =>
         prevMeds.map((med) => {
@@ -452,7 +493,6 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       setInventoryTx((prev) => [...newTx, ...prev]);
 
-      // Update customer spending
       if (customer) {
         setCustomers((prev) =>
           prev.map((c) =>
@@ -472,7 +512,6 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         );
       }
 
-      // Link prescription if dispensed
       if (payload.prescriptionId) {
         setPrescriptions((prev) =>
           prev.map((rx) =>
@@ -502,6 +541,26 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return newSale;
     },
     [customers, sales.length, settings.currencySymbol, settings.invoicePrefix, logActivity, pushToast]
+  );
+
+  const updateSalePaymentStatus = useCallback(
+    (saleId: string, paymentStatus: PaymentStatus) => {
+      const target = sales.find((s) => s.id === saleId);
+      if (!target) return;
+      setSales((prev) => prev.map((s) => (s.id === saleId ? { ...s, paymentStatus } : s)));
+      if (target.paymentStatus === 'Pending' && paymentStatus === 'Paid' && target.customerId !== 'cust-walkin') {
+        setCustomers((prev) =>
+          prev.map((c) =>
+            c.id === target.customerId
+              ? { ...c, outstandingBalance: Math.max(0, c.outstandingBalance - target.grandTotal) }
+              : c
+          )
+        );
+      }
+      logActivity('Sales', 'Payment Updated', `${target.invoiceNumber} marked as ${paymentStatus}`);
+      pushToast(`Invoice ${target.invoiceNumber} marked ${paymentStatus}`);
+    },
+    [sales, logActivity, pushToast]
   );
 
   // Stock Adjustment
@@ -537,7 +596,6 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [logActivity, pushToast]
   );
 
-  // Stock Transfer
   const transferStock = useCallback(
     (payload: { medicineId: string; quantity: number; fromLocation: string; toLocation: string }) => {
       const med = medicines.find((m) => m.id === payload.medicineId);
@@ -582,7 +640,6 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [medicines, transfers.length, logActivity, pushToast]
   );
 
-  // Expiry removal / supplier return
   const removeExpiredBatch = useCallback(
     (medicineId: string, quantity: number, disposition: 'Expired Removal' | 'Supplier Return', notes: string) => {
       adjustStock({
@@ -681,6 +738,49 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [purchases, logActivity, pushToast]
   );
 
+  const recordPurchasePayment = useCallback(
+    (poId: string, amount: number) => {
+      const target = purchases.find((p) => p.id === poId);
+      if (!target || amount <= 0) return;
+      const nextPaid = Math.min(target.totalAmount, target.paidAmount + amount);
+      const nextStatus: PaymentStatus = nextPaid >= target.totalAmount ? 'Paid' : 'Partial';
+      setPurchases((prev) =>
+        prev.map((p) => (p.id === poId ? { ...p, paidAmount: nextPaid, paymentStatus: nextStatus } : p))
+      );
+      setSuppliers((prev) =>
+        prev.map((s) =>
+          s.id === target.supplierId
+            ? {
+                ...s,
+                outstandingBalance: Math.max(0, s.outstandingBalance - amount),
+                paymentHistory: [
+                  {
+                    id: generateId('sp'),
+                    date: REFERENCE_TODAY,
+                    amount,
+                    method: 'Bank Transfer',
+                    reference: target.poNumber,
+                  },
+                  ...s.paymentHistory,
+                ],
+              }
+            : s
+        )
+      );
+      logActivity('Purchases', 'PO Payment', `Recorded Rs. ${amount} against ${target.poNumber}`);
+      pushToast(`Payment recorded for ${target.poNumber}`);
+    },
+    [purchases, logActivity, pushToast]
+  );
+
+  const deletePurchaseOrder = useCallback(
+    (poId: string) => {
+      setPurchases((prev) => prev.filter((p) => p.id !== poId));
+      pushToast('Purchase order removed', 'info');
+    },
+    [pushToast]
+  );
+
   // Prescriptions
   const addPrescription = useCallback(
     (rx: Omit<Prescription, 'id' | 'prescriptionNumber'>) => {
@@ -700,6 +800,14 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     (id: string, status: Prescription['status']) => {
       setPrescriptions((prev) => prev.map((rx) => (rx.id === id ? { ...rx, status } : rx)));
       pushToast(`Prescription marked as ${status}`);
+    },
+    [pushToast]
+  );
+
+  const deletePrescription = useCallback(
+    (id: string) => {
+      setPrescriptions((prev) => prev.filter((rx) => rx.id !== id));
+      pushToast('Prescription deleted', 'info');
     },
     [pushToast]
   );
@@ -763,7 +871,6 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         prev.map((s) => (s.id === sale.id ? { ...s, paymentStatus: 'Refunded' } : s))
       );
 
-      // Restock restockable items
       const txList: InventoryTransaction[] = [];
       setMedicines((prevMeds) =>
         prevMeds.map((med) => {
@@ -822,10 +929,19 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [employees.length, logActivity, pushToast]
   );
 
-  const updateEmployeeStatus = useCallback(
-    (id: string, status: Employee['status']) => {
-      setEmployees((prev) => prev.map((e) => (e.id === id ? { ...e, status } : e)));
-      pushToast('Staff status updated');
+  const updateEmployee = useCallback(
+    (id: string, patch: Partial<Employee>) => {
+      setEmployees((prev) => prev.map((e) => (e.id === id ? { ...e, ...patch } : e)));
+      pushToast('Employee profile updated');
+    },
+    [pushToast]
+  );
+
+  const deleteEmployee = useCallback(
+    (id: string) => {
+      setEmployees((prev) => prev.filter((e) => e.id !== id));
+      setAttendance((prev) => prev.filter((a) => a.employeeId !== id));
+      pushToast('Employee removed from directory', 'info');
     },
     [pushToast]
   );
@@ -874,6 +990,22 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [expenses.length, logActivity, pushToast]
   );
 
+  const updateExpense = useCallback(
+    (id: string, patch: Partial<Expense>) => {
+      setExpenses((prev) => prev.map((e) => (e.id === id ? { ...e, ...patch } : e)));
+      pushToast('Expense updated');
+    },
+    [pushToast]
+  );
+
+  const deleteExpense = useCallback(
+    (id: string) => {
+      setExpenses((prev) => prev.filter((e) => e.id !== id));
+      pushToast('Expense deleted', 'info');
+    },
+    [pushToast]
+  );
+
   // Notifications
   const markNotificationRead = useCallback((id: string, read = true) => {
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read } : n)));
@@ -882,6 +1014,15 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const markAllNotificationsRead = useCallback(() => {
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
     pushToast('All notifications marked as read', 'info');
+  }, [pushToast]);
+
+  const deleteNotification = useCallback((id: string) => {
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+  }, []);
+
+  const clearReadNotifications = useCallback(() => {
+    setNotifications((prev) => prev.filter((n) => !n.read));
+    pushToast('Cleared read notifications', 'info');
   }, [pushToast]);
 
   // Settings
@@ -893,11 +1034,35 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [pushToast]
   );
 
+  const resetDemoData = useCallback(() => {
+    setMedicines(INITIAL_MEDICINES);
+    setCategories(INITIAL_CATEGORIES);
+    setSuppliers(INITIAL_SUPPLIERS);
+    setCustomers(INITIAL_CUSTOMERS);
+    setSales(INITIAL_SALES);
+    setPurchases(INITIAL_PURCHASES);
+    setPrescriptions(INITIAL_PRESCRIPTIONS);
+    setInventoryTx(INITIAL_INVENTORY_TX);
+    setTransfers(INITIAL_TRANSFERS);
+    setReturns(INITIAL_RETURNS);
+    setEmployees(INITIAL_EMPLOYEES);
+    setAttendance(INITIAL_ATTENDANCE);
+    setActivityLogs(INITIAL_ACTIVITY_LOGS);
+    setRolePermissions(DEFAULT_ROLE_PERMISSIONS);
+    setExpenses(INITIAL_EXPENSES);
+    setNotifications(INITIAL_NOTIFICATIONS);
+    setSettings(INITIAL_SETTINGS);
+    pushToast('Demo dataset restored to initial state', 'info');
+  }, [pushToast]);
+
   return (
     <PMSContext.Provider
       value={{
         activeRoute,
         setActiveRoute,
+        quickActionIntent,
+        triggerQuickAction,
+        clearQuickActionIntent,
         theme,
         toggleTheme,
         sidebarCollapsed,
@@ -941,23 +1106,34 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addCustomer,
         updateCustomer,
         deleteCustomer,
+        recordCustomerPayment,
         completeSale,
+        updateSalePaymentStatus,
         adjustStock,
         transferStock,
         removeExpiredBatch,
         createPurchaseOrder,
         receivePurchaseOrder,
+        recordPurchasePayment,
+        deletePurchaseOrder,
         addPrescription,
         updatePrescriptionStatus,
+        deletePrescription,
         processReturn,
         addEmployee,
-        updateEmployeeStatus,
+        updateEmployee,
+        deleteEmployee,
         updateAttendanceStatus,
         toggleRolePermission,
         addExpense,
+        updateExpense,
+        deleteExpense,
         markNotificationRead,
         markAllNotificationsRead,
+        deleteNotification,
+        clearReadNotifications,
         updateSettings,
+        resetDemoData,
       }}
     >
       {children}

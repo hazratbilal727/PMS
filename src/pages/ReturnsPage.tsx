@@ -1,14 +1,23 @@
-import React, { useState } from 'react';
-import { Plus, RotateCcw } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { DollarSign, Plus, Receipt, RotateCcw } from 'lucide-react';
 import { formatCurrencyExact, formatDate } from '../lib/utils';
 import { usePMS } from '../services/pmsStore';
 import type { PaymentMethod } from '../types';
+import { EmptyState } from '../components/ui/EmptyState';
+import { KpiCard } from '../components/ui/KpiCard';
 import { Modal } from '../components/ui/Modal';
+import { PageHeader } from '../components/ui/PageHeader';
+import { PaginationBar } from '../components/ui/PaginationBar';
+import { SearchInput } from '../components/ui/SearchInput';
 import { StatusText } from '../components/ui/StatusText';
 
 export const ReturnsPage: React.FC = () => {
   const { returns, sales, settings, processReturn } = usePMS();
   const [modalOpen, setModalOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const [methodFilter, setMethodFilter] = useState<'All' | PaymentMethod>('All');
+  const [page, setPage] = useState(1);
+  const pageSize = 8;
 
   const eligibleSales = sales.filter((s) => s.paymentStatus !== 'Refunded');
   const [selectedSaleId, setSelectedSaleId] = useState(eligibleSales[0]?.id ?? '');
@@ -18,6 +27,22 @@ export const ReturnsPage: React.FC = () => {
 
   const selectedSale = sales.find((s) => s.id === selectedSaleId);
 
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return returns.filter((r) => {
+      const matchMethod = methodFilter === 'All' || r.refundMethod === methodFilter;
+      const matchSearch =
+        !q ||
+        r.returnNumber.toLowerCase().includes(q) ||
+        r.invoiceNumber.toLowerCase().includes(q) ||
+        r.customerName.toLowerCase().includes(q) ||
+        r.reason.toLowerCase().includes(q) ||
+        r.items.some((i) => i.medicineName.toLowerCase().includes(q));
+      return matchMethod && matchSearch;
+    });
+  }, [returns, search, methodFilter]);
+
+  const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
   const totalRefunded = returns.reduce((sum, r) => sum + r.refundAmount, 0);
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -41,105 +66,160 @@ export const ReturnsPage: React.FC = () => {
   };
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="font-display text-xl font-bold text-slate-900 dark:text-slate-100">
-            Returns & Refunds ({returns.length})
-          </h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            Process customer medicine returns, manage sealed restocking, and audit refund payouts
-          </p>
-        </div>
+    <div className="space-y-6">
+      <PageHeader
+        title={`Returns & Refunds (${returns.length})`}
+        description="Process customer medicine returns, manage sealed restocking, and audit refund payouts"
+        actions={
+          <button
+            type="button"
+            disabled={eligibleSales.length === 0}
+            onClick={() => {
+              setSelectedSaleId(eligibleSales[0]?.id ?? '');
+              setModalOpen(true);
+            }}
+            className="pms-btn-primary"
+          >
+            <Plus className="h-4 w-4" />
+            <span>Process Return</span>
+          </button>
+        }
+      />
 
-        <button
-          type="button"
-          disabled={eligibleSales.length === 0}
-          onClick={() => {
-            setSelectedSaleId(eligibleSales[0]?.id ?? '');
-            setModalOpen(true);
-          }}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-teal-700 px-3.5 py-2 text-xs font-medium text-white hover:bg-teal-800 disabled:opacity-50 dark:bg-teal-600"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          <span>Process Return</span>
-        </button>
+      {/* Summary KPIs */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <KpiCard
+          label="Total Returns Logged"
+          value={returns.length}
+          subtitle="All audited refund vouchers"
+          icon={RotateCcw}
+          tone="slate"
+        />
+        <KpiCard
+          label="Total Refunded Value"
+          value={formatCurrencyExact(totalRefunded, settings.currencySymbol)}
+          subtitle="Cumulative customer payouts"
+          icon={DollarSign}
+          tone="red"
+        />
+        <KpiCard
+          label="Eligible Open Invoices"
+          value={eligibleSales.length}
+          subtitle="Invoices available for return"
+          icon={Receipt}
+          tone="teal"
+        />
       </div>
 
-      {/* Summary */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-          <p className="text-xs text-slate-500">Total Returns Logged</p>
-          <p className="mt-1 font-mono text-2xl font-bold tabular-nums">{returns.length}</p>
-        </div>
-        <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-          <p className="text-xs text-slate-500">Total Refunded Value</p>
-          <p className="mt-1 font-mono text-2xl font-bold text-red-600 tabular-nums dark:text-red-400">
-            {formatCurrencyExact(totalRefunded, settings.currencySymbol)}
-          </p>
-        </div>
-        <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-          <p className="text-xs text-slate-500">Eligible Open Invoices</p>
-          <p className="mt-1 font-mono text-2xl font-bold tabular-nums">{eligibleSales.length}</p>
-        </div>
+      {/* Filters */}
+      <div className="pms-card flex flex-col gap-3.5 p-4 sm:flex-row sm:items-center sm:justify-between">
+        <SearchInput
+          value={search}
+          onValueChange={(val) => {
+            setSearch(val);
+            setPage(1);
+          }}
+          placeholder="Search return #, invoice #, customer or medicine..."
+          containerClassName="w-full sm:max-w-md"
+        />
+
+        <select
+          value={methodFilter}
+          onChange={(e) => {
+            setMethodFilter(e.target.value as 'All' | PaymentMethod);
+            setPage(1);
+          }}
+          aria-label="Filter by refund method"
+          className="pms-select sm:w-56"
+        >
+          <option value="All">All Refund Methods</option>
+          <option value="Cash">Cash</option>
+          <option value="Card">Card</option>
+          <option value="Bank Transfer">Bank Transfer</option>
+          <option value="Other">Other</option>
+        </select>
       </div>
 
       {/* Refund Ledger */}
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead>
-              <tr className="border-b border-slate-200 bg-slate-50/70 text-slate-500 dark:border-slate-800 dark:bg-slate-800/40">
-                <th className="px-4 py-3 font-medium">Return #</th>
-                <th className="px-3 py-3 font-medium">Invoice / Customer</th>
-                <th className="px-3 py-3 font-medium">Returned Items</th>
-                <th className="px-3 py-3 font-medium">Reason</th>
-                <th className="px-3 py-3 text-right font-medium">Refund</th>
-                <th className="px-4 py-3 font-medium">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {returns.map((r) => (
-                <tr key={r.id}>
-                  <td className="px-4 py-3">
-                    <p className="font-mono font-semibold">{r.returnNumber}</p>
-                    <p className="text-[11px] text-slate-400">{formatDate(r.date)}</p>
-                  </td>
-                  <td className="px-3 py-3">
-                    <p className="font-mono font-medium">{r.invoiceNumber}</p>
-                    <p className="text-[11px] text-slate-500">{r.customerName}</p>
-                  </td>
-                  <td className="px-3 py-3">
-                    {r.items.map((i, idx) => (
-                      <p key={idx}>
-                        {i.medicineName} × {i.quantity} ({i.restockable ? 'Restocked' : 'Damaged'})
-                      </p>
-                    ))}
-                  </td>
-                  <td className="px-3 py-3 max-w-xs text-slate-600 dark:text-slate-400">{r.reason}</td>
-                  <td className="px-3 py-3 text-right font-mono font-semibold tabular-nums">
-                    <p>{formatCurrencyExact(r.refundAmount, settings.currencySymbol)}</p>
-                    <p className="text-[11px] font-normal text-slate-400">{r.refundMethod}</p>
-                  </td>
-                  <td className="px-4 py-3">
-                    <StatusText label={r.status} tone="ok" />
-                  </td>
+      <div className="pms-card overflow-hidden">
+        {paged.length === 0 ? (
+          <EmptyState
+            icon={RotateCcw}
+            title="No return records found"
+            description="No returns or refunds matched your current search or refund method filter."
+            actionLabel="Reset Filters"
+            onAction={() => {
+              setSearch('');
+              setMethodFilter('All');
+              setPage(1);
+            }}
+          />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50/70 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-400">
+                  <th className="px-5 py-3.5">Return #</th>
+                  <th className="px-4 py-3.5">Invoice / Customer</th>
+                  <th className="px-4 py-3.5">Returned Items</th>
+                  <th className="px-4 py-3.5">Reason</th>
+                  <th className="px-4 py-3.5 text-right">Refund</th>
+                  <th className="px-5 py-3.5">Status</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {paged.map((r) => (
+                  <tr key={r.id} className="transition-colors hover:bg-slate-50/75 dark:hover:bg-slate-800/40">
+                    <td className="px-5 py-3.5">
+                      <p className="font-mono font-semibold text-slate-900 dark:text-slate-100">{r.returnNumber}</p>
+                      <p className="text-xs text-slate-400">{formatDate(r.date)}</p>
+                    </td>
+                    <td className="px-4 py-3.5">
+                      <p className="font-mono font-medium text-slate-800 dark:text-slate-200">{r.invoiceNumber}</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">{r.customerName}</p>
+                    </td>
+                    <td className="px-4 py-3.5">
+                      {r.items.map((i, idx) => (
+                        <p key={idx} className="text-slate-700 dark:text-slate-300">
+                          {i.medicineName} × {i.quantity}{' '}
+                          <span className="text-xs text-slate-400">({i.restockable ? 'Restocked' : 'Damaged'})</span>
+                        </p>
+                      ))}
+                    </td>
+                    <td className="max-w-xs px-4 py-3.5 text-slate-600 dark:text-slate-400">{r.reason}</td>
+                    <td className="px-4 py-3.5 text-right font-mono font-semibold tabular-nums">
+                      <p className="text-slate-900 dark:text-slate-100">
+                        {formatCurrencyExact(r.refundAmount, settings.currencySymbol)}
+                      </p>
+                      <p className="text-xs font-sans font-normal text-slate-400">{r.refundMethod}</p>
+                    </td>
+                    <td className="px-5 py-3.5">
+                      <StatusText label={r.status} tone="ok" />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <PaginationBar page={page} pageSize={pageSize} total={filtered.length} onPageChange={setPage} />
       </div>
 
       {/* Process Return Modal */}
-      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="Process Customer Return & Refund" size="md">
-        <form onSubmit={handleSubmit} className="space-y-4 text-xs">
+      <Modal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        title="Process Customer Return & Refund"
+        subtitle="Select an open invoice to issue a refund and optionally restock sealed items"
+        size="md"
+      >
+        <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="mb-1 block font-medium">Select Invoice</label>
+            <label className="pms-label">Select Invoice</label>
             <select
               value={selectedSaleId}
               onChange={(e) => setSelectedSaleId(e.target.value)}
-              className="w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700 dark:bg-slate-800"
+              className="pms-select"
             >
               {eligibleSales.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -149,9 +229,11 @@ export const ReturnsPage: React.FC = () => {
             </select>
           </div>
           {selectedSale && (
-            <div className="rounded-lg bg-slate-50 p-3 dark:bg-slate-800/50">
-              <p className="font-semibold">Items on {selectedSale.invoiceNumber}:</p>
-              <ul className="mt-1 space-y-1 text-slate-600 dark:text-slate-300">
+            <div className="rounded-xl bg-slate-50 p-3.5 text-sm dark:bg-slate-800/60">
+              <p className="font-semibold text-slate-800 dark:text-slate-200">
+                Items on {selectedSale.invoiceNumber}:
+              </p>
+              <ul className="mt-1.5 space-y-1 text-slate-600 dark:text-slate-300">
                 {selectedSale.items.map((item, idx) => (
                   <li key={idx}>
                     {item.medicineName} × {item.quantity}
@@ -161,11 +243,11 @@ export const ReturnsPage: React.FC = () => {
             </div>
           )}
           <div>
-            <label className="mb-1 block font-medium">Refund Method</label>
+            <label className="pms-label">Refund Method</label>
             <select
               value={refundMethod}
               onChange={(e) => setRefundMethod(e.target.value as PaymentMethod)}
-              className="w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700 dark:bg-slate-800"
+              className="pms-select"
             >
               <option value="Cash">Cash</option>
               <option value="Card">Card Reversal</option>
@@ -173,17 +255,17 @@ export const ReturnsPage: React.FC = () => {
             </select>
           </div>
           <div>
-            <label className="mb-1 block font-medium">Return Reason *</label>
+            <label className="pms-label">Return Reason *</label>
             <textarea
               rows={2}
               required
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               placeholder="e.g. Prescription modified by physician within 48h"
-              className="w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700 dark:bg-slate-800"
+              className="pms-textarea"
             />
           </div>
-          <label className="flex items-center gap-2 font-medium">
+          <label className="flex items-center gap-2.5 text-sm font-medium text-slate-700 dark:text-slate-300">
             <input
               type="checkbox"
               checked={restockable}
@@ -192,19 +274,12 @@ export const ReturnsPage: React.FC = () => {
             />
             <span>Packaging unopened & safe — restock items into active inventory</span>
           </label>
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setModalOpen(false)}
-              className="rounded-lg border border-slate-200 px-4 py-2 font-medium dark:border-slate-700"
-            >
+          <div className="flex justify-end gap-2.5 pt-2">
+            <button type="button" onClick={() => setModalOpen(false)} className="pms-btn-secondary">
               Cancel
             </button>
-            <button
-              type="submit"
-              className="inline-flex items-center gap-1.5 rounded-lg bg-teal-700 px-4 py-2 font-medium text-white hover:bg-teal-800"
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
+            <button type="submit" className="pms-btn-primary">
+              <RotateCcw className="h-4 w-4" />
               <span>Confirm Refund</span>
             </button>
           </div>

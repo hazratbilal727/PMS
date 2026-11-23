@@ -1,11 +1,10 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowUpDown,
   Download,
   Edit2,
   Eye,
   Plus,
-  Search,
   Trash2,
   Upload,
 } from 'lucide-react';
@@ -14,7 +13,12 @@ import { downloadCSV, formatCurrency, formatDate, getExpiryStatus, getStockStatu
 import { validateMedicineForm } from '../lib/validations';
 import { usePMS } from '../services/pmsStore';
 import type { DosageForm, Medicine } from '../types';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
+import { EmptyState } from '../components/ui/EmptyState';
 import { Modal } from '../components/ui/Modal';
+import { PageHeader } from '../components/ui/PageHeader';
+import { PaginationBar } from '../components/ui/PaginationBar';
+import { SearchInput } from '../components/ui/SearchInput';
 import { StatusText } from '../components/ui/StatusText';
 
 const EMPTY_FORM: Omit<Medicine, 'id'> = {
@@ -52,12 +56,16 @@ export const MedicinesPage: React.FC = () => {
     addMedicine,
     updateMedicine,
     deleteMedicine,
+    adjustStock,
     importMedicinesBatch,
+    quickActionIntent,
+    clearQuickActionIntent,
   } = usePMS();
 
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('All');
   const [mfgFilter, setMfgFilter] = useState('All');
+  const [alertFilter, setAlertFilter] = useState<'all' | 'low' | 'expiring'>('all');
   const [sortBy, setSortBy] = useState<'name' | 'sellingPrice' | 'availableQuantity' | 'expiryDate'>('name');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [page, setPage] = useState(1);
@@ -72,6 +80,27 @@ export const MedicinesPage: React.FC = () => {
   const [viewMed, setViewMed] = useState<Medicine | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Medicine | null>(null);
   const [importOpen, setImportOpen] = useState(false);
+
+  const openAdd = () => {
+    setEditingId(null);
+    setFormData({
+      ...EMPTY_FORM,
+      medicineCode: `MED-${1016 + medicines.length}`,
+      barcode: `8964001001${160 + medicines.length}`,
+      category: categories[0]?.name ?? 'Antibiotics & Antimicrobials',
+      supplierId: suppliers[0]?.id ?? 'sup-1',
+      supplierName: suppliers[0]?.companyName ?? '',
+    });
+    setFormErrors({});
+    setFormOpen(true);
+  };
+
+  useEffect(() => {
+    if (quickActionIntent === 'add-medicine') {
+      openAdd();
+      clearQuickActionIntent();
+    }
+  }, [quickActionIntent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const manufacturers = useMemo(
     () => Array.from(new Set(medicines.map((m) => m.manufacturer))).sort(),
@@ -89,7 +118,11 @@ export const MedicinesPage: React.FC = () => {
         m.barcode.includes(q);
       const matchCat = catFilter === 'All' || m.category === catFilter;
       const matchMfg = mfgFilter === 'All' || m.manufacturer === mfgFilter;
-      return matchSearch && matchCat && matchMfg;
+      const matchAlert =
+        alertFilter === 'all' ||
+        (alertFilter === 'low' && m.availableQuantity <= m.minimumStockLevel) ||
+        (alertFilter === 'expiring' && getExpiryStatus(m.expiryDate).daysLeft <= 90);
+      return matchSearch && matchCat && matchMfg && matchAlert;
     });
 
     return [...list].sort((a, b) => {
@@ -99,9 +132,8 @@ export const MedicinesPage: React.FC = () => {
       if (sortBy === 'availableQuantity') return (a.availableQuantity - b.availableQuantity) * factor;
       return a.expiryDate.localeCompare(b.expiryDate) * factor;
     });
-  }, [medicines, search, catFilter, mfgFilter, sortBy, sortDir]);
+  }, [medicines, search, catFilter, mfgFilter, alertFilter, sortBy, sortDir]);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
 
   const toggleSort = (col: typeof sortBy) => {
@@ -111,20 +143,6 @@ export const MedicinesPage: React.FC = () => {
       setSortBy(col);
       setSortDir('asc');
     }
-  };
-
-  const openAdd = () => {
-    setEditingId(null);
-    setFormData({
-      ...EMPTY_FORM,
-      medicineCode: `MED-${1016 + medicines.length}`,
-      barcode: `8964001001${160 + medicines.length}`,
-      category: categories[0]?.name ?? 'Antibiotics & Antimicrobials',
-      supplierId: suppliers[0]?.id ?? 'sup-1',
-      supplierName: suppliers[0]?.companyName ?? '',
-    });
-    setFormErrors({});
-    setFormOpen(true);
   };
 
   const openEdit = (med: Medicine) => {
@@ -230,69 +248,55 @@ export const MedicinesPage: React.FC = () => {
     setImportOpen(false);
   };
 
-  return (
-    <div className="space-y-5">
-      {/* Header */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="font-display text-xl font-bold text-slate-900 dark:text-slate-100">
-            Medicine Catalog ({filtered.length})
-          </h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            Manage formulations, pricing, batch numbers, barcodes, and reorder thresholds
-          </p>
-        </div>
+  const resetFilters = () => {
+    setSearch('');
+    setCatFilter('All');
+    setMfgFilter('All');
+    setAlertFilter('all');
+    setPage(1);
+  };
 
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setImportOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-          >
-            <Upload className="h-3.5 w-3.5" />
-            <span>Import</span>
-          </button>
-          <button
-            type="button"
-            onClick={handleExportCSV}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-          >
-            <Download className="h-3.5 w-3.5" />
-            <span>Export CSV</span>
-          </button>
-          <button
-            type="button"
-            onClick={openAdd}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-teal-700 px-3.5 py-2 text-xs font-medium text-white hover:bg-teal-800 dark:bg-teal-600 dark:hover:bg-teal-700"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            <span>Add Medicine</span>
-          </button>
-        </div>
-      </div>
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title={`Medicine Catalog (${filtered.length})`}
+        description="Manage formulations, pricing, batch numbers, barcodes, and reorder thresholds"
+        actions={
+          <>
+            <button type="button" onClick={() => setImportOpen(true)} className="pms-btn-secondary">
+              <Upload className="h-4 w-4" />
+              <span>Import</span>
+            </button>
+            <button type="button" onClick={handleExportCSV} className="pms-btn-secondary">
+              <Download className="h-4 w-4" />
+              <span>Export CSV</span>
+            </button>
+            <button type="button" onClick={openAdd} className="pms-btn-primary">
+              <Plus className="h-4 w-4" />
+              <span>Add Medicine</span>
+            </button>
+          </>
+        }
+      />
 
       {/* Filters */}
-      <div className="grid grid-cols-1 gap-3 rounded-xl border border-slate-200 bg-white p-4 sm:grid-cols-4 dark:border-slate-800 dark:bg-slate-900">
-        <div className="relative sm:col-span-2">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          <input
-            type="search"
-            value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
-              setPage(1);
-            }}
-            placeholder="Search by medicine name, generic, code or barcode..."
-            className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-xs focus:border-teal-600 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800"
-          />
-        </div>
+      <div className="pms-card grid grid-cols-1 gap-3.5 p-4 sm:grid-cols-2 lg:grid-cols-5">
+        <SearchInput
+          value={search}
+          onValueChange={(val) => {
+            setSearch(val);
+            setPage(1);
+          }}
+          placeholder="Search by medicine name, generic, code or barcode..."
+          containerClassName="lg:col-span-2"
+        />
         <select
           value={catFilter}
           onChange={(e) => {
             setCatFilter(e.target.value);
             setPage(1);
           }}
-          className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-800"
+          className="pms-select"
         >
           <option value="All">All Categories</option>
           {categories.map((c) => (
@@ -307,7 +311,7 @@ export const MedicinesPage: React.FC = () => {
             setMfgFilter(e.target.value);
             setPage(1);
           }}
-          className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-800"
+          className="pms-select"
         >
           <option value="All">All Manufacturers</option>
           {manufacturers.map((m) => (
@@ -316,98 +320,111 @@ export const MedicinesPage: React.FC = () => {
             </option>
           ))}
         </select>
+        <select
+          value={alertFilter}
+          onChange={(e) => {
+            setAlertFilter(e.target.value as 'all' | 'low' | 'expiring');
+            setPage(1);
+          }}
+          className="pms-select"
+        >
+          <option value="all">All Stock & Expiry</option>
+          <option value="low">Low Stock Only</option>
+          <option value="expiring">Expiring / Expired (&lt;90d)</option>
+        </select>
       </div>
 
       {/* Table */}
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead>
-              <tr className="border-b border-slate-200 bg-slate-50/70 text-slate-500 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-400">
-                <th className="px-4 py-3 font-medium">
-                  <button type="button" onClick={() => toggleSort('name')} className="inline-flex items-center gap-1 hover:text-slate-900 dark:hover:text-slate-100">
-                    <span>Medicine</span>
-                    <ArrowUpDown className="h-3 w-3" />
-                  </button>
-                </th>
-                <th className="px-3 py-3 font-medium">Code / Batch</th>
-                <th className="px-3 py-3 font-medium">Category & Form</th>
-                <th className="px-3 py-3 font-medium">Manufacturer</th>
-                <th className="px-3 py-3 text-right font-medium">
-                  <button type="button" onClick={() => toggleSort('sellingPrice')} className="inline-flex items-center gap-1 hover:text-slate-900 dark:hover:text-slate-100">
-                    <span>Price</span>
-                    <ArrowUpDown className="h-3 w-3" />
-                  </button>
-                </th>
-                <th className="px-3 py-3 text-right font-medium">
-                  <button type="button" onClick={() => toggleSort('availableQuantity')} className="inline-flex items-center gap-1 hover:text-slate-900 dark:hover:text-slate-100">
-                    <span>Stock</span>
-                    <ArrowUpDown className="h-3 w-3" />
-                  </button>
-                </th>
-                <th className="px-3 py-3 font-medium">
-                  <button type="button" onClick={() => toggleSort('expiryDate')} className="inline-flex items-center gap-1 hover:text-slate-900 dark:hover:text-slate-100">
-                    <span>Expiry</span>
-                    <ArrowUpDown className="h-3 w-3" />
-                  </button>
-                </th>
-                <th className="px-4 py-3 text-right font-medium">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {paged.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="px-4 py-12 text-center text-slate-500">
-                    No medicines match your current filters.
-                  </td>
+      <div className="pms-card overflow-hidden">
+        {paged.length === 0 ? (
+          <EmptyState
+            title="No medicines found"
+            description="No medicines match your current search or filter selection."
+            actionLabel="Reset All Filters"
+            onAction={resetFilters}
+          />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50/70 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-400">
+                  <th className="px-5 py-3.5">
+                    <button type="button" onClick={() => toggleSort('name')} className="inline-flex items-center gap-1.5 hover:text-slate-900 dark:hover:text-slate-100">
+                      <span>Medicine</span>
+                      <ArrowUpDown className="h-3.5 w-3.5" />
+                    </button>
+                  </th>
+                  <th className="px-4 py-3.5">Code / Batch</th>
+                  <th className="px-4 py-3.5">Category & Form</th>
+                  <th className="px-4 py-3.5">Manufacturer</th>
+                  <th className="px-4 py-3.5 text-right">
+                    <button type="button" onClick={() => toggleSort('sellingPrice')} className="inline-flex items-center gap-1.5 hover:text-slate-900 dark:hover:text-slate-100">
+                      <span>Price</span>
+                      <ArrowUpDown className="h-3.5 w-3.5" />
+                    </button>
+                  </th>
+                  <th className="px-4 py-3.5 text-right">
+                    <button type="button" onClick={() => toggleSort('availableQuantity')} className="inline-flex items-center gap-1.5 hover:text-slate-900 dark:hover:text-slate-100">
+                      <span>Stock</span>
+                      <ArrowUpDown className="h-3.5 w-3.5" />
+                    </button>
+                  </th>
+                  <th className="px-4 py-3.5">
+                    <button type="button" onClick={() => toggleSort('expiryDate')} className="inline-flex items-center gap-1.5 hover:text-slate-900 dark:hover:text-slate-100">
+                      <span>Expiry</span>
+                      <ArrowUpDown className="h-3.5 w-3.5" />
+                    </button>
+                  </th>
+                  <th className="px-5 py-3.5 text-right">Actions</th>
                 </tr>
-              ) : (
-                paged.map((med) => {
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {paged.map((med) => {
                   const stockSt = getStockStatus(med.availableQuantity, med.minimumStockLevel);
                   const expSt = getExpiryStatus(med.expiryDate);
                   return (
-                    <tr key={med.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40">
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-3">
+                    <tr key={med.id} className="transition-colors hover:bg-slate-50/75 dark:hover:bg-slate-800/40">
+                      <td className="px-5 py-3.5">
+                        <div className="flex items-center gap-3.5">
                           <img
                             src={med.imageUrl}
                             alt={med.name}
                             referrerPolicy="no-referrer"
-                            className="h-9 w-9 shrink-0 rounded-md border border-slate-200 object-cover dark:border-slate-700"
+                            className="h-11 w-11 shrink-0 rounded-xl border border-slate-200 object-cover dark:border-slate-700"
                           />
                           <div className="min-w-0">
                             <p className="font-semibold text-slate-900 dark:text-slate-100">{med.name}</p>
-                            <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">
+                            <p className="truncate text-xs text-slate-500 dark:text-slate-400">
                               {med.genericName} · {med.strength}
                             </p>
                           </div>
                         </div>
                       </td>
-                      <td className="px-3 py-3 font-mono text-[11px]">
+                      <td className="px-4 py-3.5 font-mono text-xs">
                         <p className="font-medium text-slate-900 dark:text-slate-200">{med.medicineCode}</p>
                         <p className="text-slate-400">{med.batchNumber}</p>
                       </td>
-                      <td className="px-3 py-3">
+                      <td className="px-4 py-3.5">
                         <p className="text-slate-800 dark:text-slate-200">{med.dosageForm}</p>
-                        <p className="text-[11px] text-slate-400">{med.prescriptionRequired ? 'Rx Only' : 'OTC'}</p>
+                        <p className="text-xs text-slate-400">{med.prescriptionRequired ? 'Rx Only' : 'OTC'}</p>
                       </td>
-                      <td className="px-3 py-3 text-slate-600 dark:text-slate-400">{med.manufacturer}</td>
-                      <td className="px-3 py-3 text-right font-mono tabular-nums">
+                      <td className="px-4 py-3.5 text-slate-600 dark:text-slate-400">{med.manufacturer}</td>
+                      <td className="px-4 py-3.5 text-right font-mono tabular-nums">
                         <p className="font-semibold text-slate-900 dark:text-slate-100">
                           {formatCurrency(med.sellingPrice, settings.currencySymbol)}
                         </p>
-                        <p className="text-[11px] text-slate-400">
+                        <p className="text-xs text-slate-400">
                           Cost {formatCurrency(med.purchasePrice, settings.currencySymbol)}
                         </p>
                       </td>
-                      <td className="px-3 py-3 text-right">
+                      <td className="px-4 py-3.5 text-right">
                         <p className="font-mono font-semibold tabular-nums text-slate-900 dark:text-slate-100">
                           {med.availableQuantity}
                         </p>
                         <StatusText label={stockSt.label} tone={stockSt.severity} showIcon={false} />
                       </td>
-                      <td className="px-3 py-3">
-                        <p className="font-mono text-[11px] text-slate-700 dark:text-slate-300">
+                      <td className="px-4 py-3.5">
+                        <p className="font-mono text-xs text-slate-700 dark:text-slate-300">
                           {formatDate(med.expiryDate)}
                         </p>
                         <StatusText
@@ -416,69 +433,43 @@ export const MedicinesPage: React.FC = () => {
                           showIcon={false}
                         />
                       </td>
-                      <td className="px-4 py-3 text-right">
+                      <td className="px-5 py-3.5 text-right">
                         <div className="inline-flex items-center gap-1">
                           <button
                             type="button"
                             onClick={() => setViewMed(med)}
                             aria-label={`View ${med.name}`}
-                            className="rounded p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+                            className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 dark:hover:bg-slate-800 dark:hover:text-slate-100"
                           >
-                            <Eye className="h-3.5 w-3.5" />
+                            <Eye className="h-4 w-4" />
                           </button>
                           <button
                             type="button"
                             onClick={() => openEdit(med)}
                             aria-label={`Edit ${med.name}`}
-                            className="rounded p-1.5 text-slate-500 hover:bg-slate-100 hover:text-teal-700 dark:hover:bg-slate-800 dark:hover:text-teal-400"
+                            className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-teal-700 dark:hover:bg-slate-800 dark:hover:text-teal-400"
                           >
-                            <Edit2 className="h-3.5 w-3.5" />
+                            <Edit2 className="h-4 w-4" />
                           </button>
                           <button
                             type="button"
                             onClick={() => setDeleteTarget(med)}
                             aria-label={`Delete ${med.name}`}
-                            className="rounded p-1.5 text-slate-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40 dark:hover:text-red-400"
+                            className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40 dark:hover:text-red-400"
                           >
-                            <Trash2 className="h-3.5 w-3.5" />
+                            <Trash2 className="h-4 w-4" />
                           </button>
                         </div>
                       </td>
                     </tr>
                   );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Pagination */}
-        <div className="flex items-center justify-between border-t border-slate-200 px-4 py-3 text-xs dark:border-slate-800">
-          <span className="text-slate-500 tabular-nums">
-            Showing {filtered.length === 0 ? 0 : (page - 1) * pageSize + 1}–{Math.min(page * pageSize, filtered.length)} of {filtered.length}
-          </span>
-          <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => p - 1)}
-              className="rounded-md border border-slate-200 px-2.5 py-1 font-medium disabled:opacity-40 dark:border-slate-700"
-            >
-              Previous
-            </button>
-            <span className="px-2 font-mono tabular-nums">
-              {page} / {totalPages}
-            </span>
-            <button
-              type="button"
-              disabled={page >= totalPages}
-              onClick={() => setPage((p) => p + 1)}
-              className="rounded-md border border-slate-200 px-2.5 py-1 font-medium disabled:opacity-40 dark:border-slate-700"
-            >
-              Next
-            </button>
+                })}
+              </tbody>
+            </table>
           </div>
-        </div>
+        )}
+
+        <PaginationBar page={page} pageSize={pageSize} total={filtered.length} onPageChange={setPage} />
       </div>
 
       {/* Add / Edit Medicine Modal */}
@@ -488,70 +479,71 @@ export const MedicinesPage: React.FC = () => {
         title={editingId ? 'Edit Medicine Record' : 'Add New Medicine'}
         size="lg"
       >
-        <form onSubmit={handleSave} className="space-y-4 text-xs">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <form onSubmit={handleSave} className="space-y-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label className="mb-1 block font-medium">Medicine Name *</label>
+              <label className="pms-label">Medicine Name *</label>
               <input
                 type="text"
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700 dark:bg-slate-800"
+                className="pms-input"
               />
-              {formErrors.name && <p className="mt-1 text-[11px] text-red-600">{formErrors.name}</p>}
+              {formErrors.name && <p className="mt-1 text-xs text-red-600">{formErrors.name}</p>}
             </div>
             <div>
-              <label className="mb-1 block font-medium">Generic Name *</label>
+              <label className="pms-label">Generic Name *</label>
               <input
                 type="text"
                 value={formData.genericName}
                 onChange={(e) => setFormData({ ...formData, genericName: e.target.value })}
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700 dark:bg-slate-800"
+                className="pms-input"
               />
-              {formErrors.genericName && <p className="mt-1 text-[11px] text-red-600">{formErrors.genericName}</p>}
+              {formErrors.genericName && <p className="mt-1 text-xs text-red-600">{formErrors.genericName}</p>}
             </div>
             <div>
-              <label className="mb-1 block font-medium">Brand Name</label>
+              <label className="pms-label">Brand Name</label>
               <input
                 type="text"
                 value={formData.brandName}
                 onChange={(e) => setFormData({ ...formData, brandName: e.target.value })}
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700 dark:bg-slate-800"
+                className="pms-input"
               />
             </div>
             <div>
-              <label className="mb-1 block font-medium">Manufacturer</label>
+              <label className="pms-label">Manufacturer</label>
               <input
                 type="text"
                 value={formData.manufacturer}
                 onChange={(e) => setFormData({ ...formData, manufacturer: e.target.value })}
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700 dark:bg-slate-800"
+                className="pms-input"
               />
             </div>
             <div>
-              <label className="mb-1 block font-medium">Medicine Code *</label>
+              <label className="pms-label">Medicine Code *</label>
               <input
                 type="text"
                 value={formData.medicineCode}
                 onChange={(e) => setFormData({ ...formData, medicineCode: e.target.value })}
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 font-mono dark:border-slate-700 dark:bg-slate-800"
+                className="pms-input font-mono"
               />
+              {formErrors.medicineCode && <p className="mt-1 text-xs text-red-600">{formErrors.medicineCode}</p>}
             </div>
             <div>
-              <label className="mb-1 block font-medium">Barcode</label>
+              <label className="pms-label">Barcode</label>
               <input
                 type="text"
                 value={formData.barcode}
                 onChange={(e) => setFormData({ ...formData, barcode: e.target.value })}
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 font-mono dark:border-slate-700 dark:bg-slate-800"
+                className="pms-input font-mono"
               />
             </div>
             <div>
-              <label className="mb-1 block font-medium">Category</label>
+              <label className="pms-label">Category</label>
               <select
                 value={formData.category}
                 onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700 dark:bg-slate-800"
+                className="pms-select"
               >
                 {categories.map((c) => (
                   <option key={c.id} value={c.name}>
@@ -561,7 +553,7 @@ export const MedicinesPage: React.FC = () => {
               </select>
             </div>
             <div>
-              <label className="mb-1 block font-medium">Dosage Form</label>
+              <label className="pms-label">Dosage Form</label>
               <select
                 value={formData.dosageForm}
                 onChange={(e) => {
@@ -574,7 +566,7 @@ export const MedicinesPage: React.FC = () => {
                       : MEDICINE_IMAGES.tablets;
                   setFormData({ ...formData, dosageForm: form, imageUrl: img });
                 }}
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700 dark:bg-slate-800"
+                className="pms-select"
               >
                 {DOSAGE_FORMS.map((d) => (
                   <option key={d} value={d}>
@@ -584,40 +576,40 @@ export const MedicinesPage: React.FC = () => {
               </select>
             </div>
             <div>
-              <label className="mb-1 block font-medium">Strength</label>
+              <label className="pms-label">Strength</label>
               <input
                 type="text"
                 value={formData.strength}
                 onChange={(e) => setFormData({ ...formData, strength: e.target.value })}
                 placeholder="e.g. 500 mg"
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700 dark:bg-slate-800"
+                className="pms-input"
               />
             </div>
             <div>
-              <label className="mb-1 block font-medium">Pack Size</label>
+              <label className="pms-label">Pack Size</label>
               <input
                 type="text"
                 value={formData.packSize}
                 onChange={(e) => setFormData({ ...formData, packSize: e.target.value })}
                 placeholder="e.g. 10x10 Tablets"
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700 dark:bg-slate-800"
+                className="pms-input"
               />
             </div>
             <div>
-              <label className="mb-1 block font-medium">Batch Number</label>
+              <label className="pms-label">Batch Number</label>
               <input
                 type="text"
                 value={formData.batchNumber}
                 onChange={(e) => setFormData({ ...formData, batchNumber: e.target.value })}
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 font-mono dark:border-slate-700 dark:bg-slate-800"
+                className="pms-input font-mono"
               />
             </div>
             <div>
-              <label className="mb-1 block font-medium">Supplier</label>
+              <label className="pms-label">Supplier</label>
               <select
                 value={formData.supplierId}
                 onChange={(e) => setFormData({ ...formData, supplierId: e.target.value })}
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700 dark:bg-slate-800"
+                className="pms-select"
               >
                 {suppliers.map((s) => (
                   <option key={s.id} value={s.id}>
@@ -627,75 +619,75 @@ export const MedicinesPage: React.FC = () => {
               </select>
             </div>
             <div>
-              <label className="mb-1 block font-medium">Purchase Price ({settings.currencySymbol}) *</label>
+              <label className="pms-label">Purchase Price ({settings.currencySymbol}) *</label>
               <input
                 type="number"
                 value={formData.purchasePrice}
                 onChange={(e) => setFormData({ ...formData, purchasePrice: Number(e.target.value) })}
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 font-mono tabular-nums dark:border-slate-700 dark:bg-slate-800"
+                className="pms-input font-mono tabular-nums"
               />
-              {formErrors.purchasePrice && <p className="mt-1 text-[11px] text-red-600">{formErrors.purchasePrice}</p>}
+              {formErrors.purchasePrice && <p className="mt-1 text-xs text-red-600">{formErrors.purchasePrice}</p>}
             </div>
             <div>
-              <label className="mb-1 block font-medium">Selling Price ({settings.currencySymbol}) *</label>
+              <label className="pms-label">Selling Price ({settings.currencySymbol}) *</label>
               <input
                 type="number"
                 value={formData.sellingPrice}
                 onChange={(e) => setFormData({ ...formData, sellingPrice: Number(e.target.value) })}
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 font-mono tabular-nums dark:border-slate-700 dark:bg-slate-800"
+                className="pms-input font-mono tabular-nums"
               />
-              {formErrors.sellingPrice && <p className="mt-1 text-[11px] text-red-600">{formErrors.sellingPrice}</p>}
+              {formErrors.sellingPrice && <p className="mt-1 text-xs text-red-600">{formErrors.sellingPrice}</p>}
             </div>
             <div>
-              <label className="mb-1 block font-medium">Available Quantity</label>
+              <label className="pms-label">Available Quantity</label>
               <input
                 type="number"
                 value={formData.availableQuantity}
                 onChange={(e) => setFormData({ ...formData, availableQuantity: Number(e.target.value) })}
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 font-mono tabular-nums dark:border-slate-700 dark:bg-slate-800"
+                className="pms-input font-mono tabular-nums"
               />
             </div>
             <div>
-              <label className="mb-1 block font-medium">Minimum Stock Level</label>
+              <label className="pms-label">Minimum Stock Level</label>
               <input
                 type="number"
                 value={formData.minimumStockLevel}
                 onChange={(e) => setFormData({ ...formData, minimumStockLevel: Number(e.target.value) })}
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 font-mono tabular-nums dark:border-slate-700 dark:bg-slate-800"
+                className="pms-input font-mono tabular-nums"
               />
             </div>
             <div>
-              <label className="mb-1 block font-medium">Manufacturing Date</label>
+              <label className="pms-label">Manufacturing Date</label>
               <input
                 type="date"
                 value={formData.manufacturingDate}
                 onChange={(e) => setFormData({ ...formData, manufacturingDate: e.target.value })}
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700 dark:bg-slate-800"
+                className="pms-input"
               />
             </div>
             <div>
-              <label className="mb-1 block font-medium">Expiry Date *</label>
+              <label className="pms-label">Expiry Date *</label>
               <input
                 type="date"
                 value={formData.expiryDate}
                 onChange={(e) => setFormData({ ...formData, expiryDate: e.target.value })}
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700 dark:bg-slate-800"
+                className="pms-input"
               />
-              {formErrors.expiryDate && <p className="mt-1 text-[11px] text-red-600">{formErrors.expiryDate}</p>}
+              {formErrors.expiryDate && <p className="mt-1 text-xs text-red-600">{formErrors.expiryDate}</p>}
             </div>
           </div>
 
           <div>
-            <label className="mb-1 block font-medium">Description / Clinical Notes</label>
+            <label className="pms-label">Description / Clinical Notes</label>
             <textarea
               rows={2}
               value={formData.description}
               onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-              className="w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700 dark:bg-slate-800"
+              className="pms-textarea"
             />
           </div>
 
-          <label className="flex items-center gap-2 font-medium">
+          <label className="flex items-center gap-2.5 text-sm font-medium text-slate-700 dark:text-slate-300">
             <input
               type="checkbox"
               checked={formData.prescriptionRequired}
@@ -705,18 +697,11 @@ export const MedicinesPage: React.FC = () => {
             <span>Prescription Required (Schedule / Controlled Dispensing)</span>
           </label>
 
-          <div className="flex justify-end gap-2 border-t border-slate-200 pt-4 dark:border-slate-800">
-            <button
-              type="button"
-              onClick={() => setFormOpen(false)}
-              className="rounded-lg border border-slate-200 px-4 py-2 font-medium dark:border-slate-700"
-            >
+          <div className="flex justify-end gap-2.5 border-t border-slate-200 pt-4 dark:border-slate-800">
+            <button type="button" onClick={() => setFormOpen(false)} className="pms-btn-secondary">
               Cancel
             </button>
-            <button
-              type="submit"
-              className="rounded-lg bg-teal-700 px-4 py-2 font-medium text-white hover:bg-teal-800"
-            >
+            <button type="submit" className="pms-btn-primary">
               {editingId ? 'Save Changes' : 'Create Medicine'}
             </button>
           </div>
@@ -730,107 +715,110 @@ export const MedicinesPage: React.FC = () => {
         title={viewMed?.name ?? 'Medicine Details'}
         subtitle={viewMed ? `${viewMed.genericName} · ${viewMed.medicineCode}` : ''}
         size="md"
+        footer={
+          viewMed && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  adjustStock({
+                    medicineId: viewMed.id,
+                    quantityChange: 10,
+                    type: 'Stock In',
+                    reason: 'Quick +10 restock from Medicine Details',
+                  });
+                  setViewMed({ ...viewMed, availableQuantity: viewMed.availableQuantity + 10 });
+                }}
+                className="pms-btn-secondary text-teal-700 dark:text-teal-400"
+              >
+                Quick Restock +10
+              </button>
+              <button type="button" onClick={() => setViewMed(null)} className="pms-btn-primary">
+                Close
+              </button>
+            </>
+          )
+        }
       >
         {viewMed && (
-          <div className="space-y-4 text-xs">
+          <div className="space-y-5 text-sm">
             <div className="flex gap-4">
               <img
                 src={viewMed.imageUrl}
                 alt={viewMed.name}
                 referrerPolicy="no-referrer"
-                className="h-24 w-32 shrink-0 rounded-lg border border-slate-200 object-cover dark:border-slate-700"
+                className="h-24 w-32 shrink-0 rounded-xl border border-slate-200 object-cover dark:border-slate-700"
               />
               <div className="space-y-1">
-                <p className="text-sm font-bold text-slate-900 dark:text-slate-100">{viewMed.name}</p>
-                <p className="text-slate-500">
+                <p className="font-display text-base font-bold text-slate-900 dark:text-slate-100">{viewMed.name}</p>
+                <p className="text-[13px] text-slate-500">
                   {viewMed.brandName} · {viewMed.manufacturer}
                 </p>
-                <p className="text-slate-600 dark:text-slate-300">{viewMed.description}</p>
+                <p className="text-sm text-slate-600 dark:text-slate-300">{viewMed.description}</p>
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 border-t border-slate-200 pt-3 dark:border-slate-800">
+            <div className="grid grid-cols-2 gap-4 border-t border-slate-200 pt-4 dark:border-slate-800">
               <div>
-                <p className="text-slate-400">Category / Dosage</p>
-                <p className="font-medium">
+                <p className="text-xs text-slate-400">Category / Dosage</p>
+                <p className="mt-0.5 font-medium">
                   {viewMed.category} ({viewMed.dosageForm})
                 </p>
               </div>
               <div>
-                <p className="text-slate-400">Strength / Pack Size</p>
-                <p className="font-medium">
+                <p className="text-xs text-slate-400">Strength / Pack Size</p>
+                <p className="mt-0.5 font-medium">
                   {viewMed.strength} · {viewMed.packSize}
                 </p>
               </div>
               <div>
-                <p className="text-slate-400">Barcode / Batch</p>
-                <p className="font-mono font-medium">
+                <p className="text-xs text-slate-400">Barcode / Batch</p>
+                <p className="mt-0.5 font-mono font-medium">
                   {viewMed.barcode} · {viewMed.batchNumber}
                 </p>
               </div>
               <div>
-                <p className="text-slate-400">Shelf Location</p>
-                <p className="font-medium">{viewMed.shelfLocation || 'Main Dispensary'}</p>
+                <p className="text-xs text-slate-400">Shelf Location & On-Hand</p>
+                <p className="mt-0.5 font-medium">
+                  {viewMed.shelfLocation || 'Main Dispensary'} ({viewMed.availableQuantity} units)
+                </p>
               </div>
               <div>
-                <p className="text-slate-400">Purchase / Selling Price</p>
-                <p className="font-mono font-semibold tabular-nums">
+                <p className="text-xs text-slate-400">Purchase / Selling Price</p>
+                <p className="mt-0.5 font-mono font-semibold tabular-nums">
                   {formatCurrency(viewMed.purchasePrice, settings.currencySymbol)} /{' '}
                   {formatCurrency(viewMed.sellingPrice, settings.currencySymbol)}
                 </p>
               </div>
               <div>
-                <p className="text-slate-400">Mfg / Expiry Dates</p>
-                <p className="font-mono">
+                <p className="text-xs text-slate-400">Mfg / Expiry Dates</p>
+                <p className="mt-0.5 font-mono">
                   {formatDate(viewMed.manufacturingDate)} → {formatDate(viewMed.expiryDate)}
                 </p>
               </div>
               <div>
-                <p className="text-slate-400">Supplier</p>
-                <p className="font-medium">{viewMed.supplierName}</p>
+                <p className="text-xs text-slate-400">Supplier</p>
+                <p className="mt-0.5 font-medium">{viewMed.supplierName}</p>
               </div>
               <div>
-                <p className="text-slate-400">Dispensing Rule</p>
-                <p className="font-medium">{viewMed.prescriptionRequired ? 'Prescription Required' : 'Over-the-Counter'}</p>
+                <p className="text-xs text-slate-400">Dispensing Rule</p>
+                <p className="mt-0.5 font-medium">{viewMed.prescriptionRequired ? 'Prescription Required' : 'Over-the-Counter'}</p>
               </div>
             </div>
           </div>
         )}
       </Modal>
 
-      {/* Delete Confirmation Modal */}
-      <Modal
+      <ConfirmDialog
         open={Boolean(deleteTarget)}
         onClose={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          if (deleteTarget) deleteMedicine(deleteTarget.id);
+        }}
         title="Confirm Medicine Deletion"
-        size="sm"
-        footer={
-          <>
-            <button
-              type="button"
-              onClick={() => setDeleteTarget(null)}
-              className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-medium dark:border-slate-700"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (deleteTarget) deleteMedicine(deleteTarget.id);
-                setDeleteTarget(null);
-              }}
-              className="rounded-lg bg-red-600 px-4 py-2 text-xs font-medium text-white hover:bg-red-700"
-            >
-              Delete Medicine
-            </button>
-          </>
-        }
-      >
-        <p className="text-xs text-slate-600 dark:text-slate-300">
-          Are you sure you want to delete <strong>{deleteTarget?.name}</strong> ({deleteTarget?.medicineCode})? This
-          action removes it from the active catalog.
-        </p>
-      </Modal>
+        message={`Are you sure you want to remove "${deleteTarget?.name ?? ''}" (${deleteTarget?.medicineCode ?? ''}) from the active pharmacy catalog?`}
+        confirmLabel="Delete Medicine"
+      />
 
       {/* Import Catalog UI Modal */}
       <Modal
@@ -839,30 +827,20 @@ export const MedicinesPage: React.FC = () => {
         title="Import Medicines Batch (CSV / Excel Simulation)"
         size="sm"
       >
-        <div className="space-y-4 text-xs">
+        <div className="space-y-4 text-sm">
           <p className="text-slate-600 dark:text-slate-300">
             Load standardized distributor catalog files into PMS. For demonstration, you can trigger a sample import of
             2 verified formulations (Flagyl 400mg & Ventolin Inhaler).
           </p>
-          <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 text-center dark:border-slate-700 dark:bg-slate-800/40">
-            <p className="font-medium text-slate-700 dark:text-slate-200">
-              sample_distributor_catalog_2026.csv
-            </p>
-            <p className="mt-1 text-[11px] text-slate-400">2 validated SKUs ready for import</p>
+          <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-5 text-center dark:border-slate-700 dark:bg-slate-800/40">
+            <p className="font-medium text-slate-800 dark:text-slate-200">sample_distributor_catalog_2026.csv</p>
+            <p className="mt-1 text-xs text-slate-400">2 validated SKUs ready for import</p>
           </div>
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setImportOpen(false)}
-              className="rounded-lg border border-slate-200 px-4 py-2 font-medium dark:border-slate-700"
-            >
+          <div className="flex justify-end gap-2.5 pt-2">
+            <button type="button" onClick={() => setImportOpen(false)} className="pms-btn-secondary">
               Cancel
             </button>
-            <button
-              type="button"
-              onClick={handleSimulateBatchImport}
-              className="rounded-lg bg-teal-700 px-4 py-2 font-medium text-white hover:bg-teal-800"
-            >
+            <button type="button" onClick={handleSimulateBatchImport} className="pms-btn-primary">
               Import 2 Medicines
             </button>
           </div>

@@ -37,20 +37,20 @@ const PMSShell: React.FC = () => {
             setPinInput('');
             setIsLocked(false);
           }}
-          className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900"
+          className="pms-card w-full max-w-md p-7 shadow-lg"
         >
-          <div className="mb-4 flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-teal-700 text-white">
+          <div className="mb-5 flex items-center gap-3.5">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-teal-700 text-white dark:bg-teal-600">
               <Lock className="h-5 w-5" />
             </div>
             <div>
-              <h1 className="font-display text-base font-bold text-slate-900 dark:text-slate-100">
+              <h1 className="font-display text-lg font-bold text-slate-900 dark:text-slate-100">
                 Session Locked
               </h1>
-              <p className="text-xs text-slate-500">{settings.pharmacyName}</p>
+              <p className="text-sm text-slate-500 dark:text-slate-400">{settings.pharmacyName}</p>
             </div>
           </div>
-          <label className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">
+          <label className="pms-label">
             Pharmacist Access PIN (any key to unlock demo)
           </label>
           <input
@@ -58,11 +58,11 @@ const PMSShell: React.FC = () => {
             value={pinInput}
             onChange={(e) => setPinInput(e.target.value)}
             placeholder="••••"
-            className="mb-4 w-full rounded-lg border border-slate-200 px-3 py-2 font-mono text-sm dark:border-slate-700 dark:bg-slate-800"
+            className="pms-input mb-5 font-mono"
           />
           <button
             type="submit"
-            className="w-full rounded-lg bg-teal-700 py-2.5 text-xs font-semibold text-white hover:bg-teal-800"
+            className="pms-btn-primary w-full"
           >
             Sign Back In as Dr. Ayesha Siddiqui
           </button>
@@ -119,8 +119,8 @@ const PMSShell: React.FC = () => {
       <Sidebar mobileOpen={mobileMenuOpen} onCloseMobile={() => setMobileMenuOpen(false)} />
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar onOpenMobileMenu={() => setMobileMenuOpen(true)} />
-        <main className="flex-1 p-4 sm:p-6">
-          <div className="mx-auto max-w-[1440px]">{renderPage()}</div>
+        <main className="flex-1 p-5 sm:p-8">
+          <div className="mx-auto max-w-[1480px]">{renderPage()}</div>
         </main>
       </div>
       <ToastContainer />

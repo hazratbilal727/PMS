@@ -1,34 +1,86 @@
 import React, { useMemo, useState } from 'react';
-import { Printer, RotateCcw, Search } from 'lucide-react';
+import {
+  ArrowUpDown,
+  CheckCircle2,
+  Clock,
+  DollarSign,
+  Printer,
+  Receipt,
+  ReceiptText,
+  RotateCcw,
+} from 'lucide-react';
 import { formatCurrencyExact, formatDateTime } from '../lib/utils';
 import { usePMS } from '../services/pmsStore';
-import type { PaymentMethod, Sale } from '../types';
+import type { PaymentMethod, PaymentStatus, Sale } from '../types';
+import { EmptyState } from '../components/ui/EmptyState';
+import { KpiCard } from '../components/ui/KpiCard';
 import { Modal } from '../components/ui/Modal';
+import { PageHeader } from '../components/ui/PageHeader';
+import { PaginationBar } from '../components/ui/PaginationBar';
+import { SearchInput } from '../components/ui/SearchInput';
 import { PrintableInvoiceModal } from '../components/dialogs/PrintableInvoiceModal';
 import { StatusText } from '../components/ui/StatusText';
 
 export const SalesPage: React.FC = () => {
-  const { sales, settings, processReturn, setActiveRoute } = usePMS();
+  const { sales, settings, processReturn, updateSalePaymentStatus, setActiveRoute } = usePMS();
 
   const [search, setSearch] = useState('');
   const [methodFilter, setMethodFilter] = useState<'All' | PaymentMethod>('All');
+  const [statusFilter, setStatusFilter] = useState<'All' | PaymentStatus>('All');
   const [dateFilter, setDateFilter] = useState('');
-  const [printSale, setPrintSale] = useState<Sale | null>(null);
+  const [sortBy, setSortBy] = useState<'date' | 'invoiceNumber' | 'grandTotal'>('date');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [page, setPage] = useState(1);
+  const pageSize = 8;
 
+  const [printSale, setPrintSale] = useState<Sale | null>(null);
   const [returnTarget, setReturnTarget] = useState<Sale | null>(null);
   const [returnReason, setReturnReason] = useState('Customer requested exchange / doctor changed prescription');
   const [restockable, setRestockable] = useState(true);
 
+  const summary = useMemo(() => {
+    const paidTotal = sales.filter((s) => s.paymentStatus === 'Paid').reduce((sum, s) => sum + s.grandTotal, 0);
+    const pendingTotal = sales
+      .filter((s) => s.paymentStatus === 'Pending' || s.paymentStatus === 'Partial')
+      .reduce((sum, s) => sum + s.grandTotal, 0);
+    const refundedTotal = sales
+      .filter((s) => s.paymentStatus === 'Refunded')
+      .reduce((sum, s) => sum + s.grandTotal, 0);
+    return { totalCount: sales.length, paidTotal, pendingTotal, refundedTotal };
+  }, [sales]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return sales.filter((s) => {
+    const list = sales.filter((s) => {
       const matchSearch =
-        !q || s.invoiceNumber.toLowerCase().includes(q) || s.customerName.toLowerCase().includes(q);
+        !q ||
+        s.invoiceNumber.toLowerCase().includes(q) ||
+        s.customerName.toLowerCase().includes(q) ||
+        s.cashierName.toLowerCase().includes(q);
       const matchMethod = methodFilter === 'All' || s.paymentMethod === methodFilter;
+      const matchStatus = statusFilter === 'All' || s.paymentStatus === statusFilter;
       const matchDate = !dateFilter || s.date.startsWith(dateFilter);
-      return matchSearch && matchMethod && matchDate;
+      return matchSearch && matchMethod && matchStatus && matchDate;
     });
-  }, [sales, search, methodFilter, dateFilter]);
+
+    const factor = sortDir === 'asc' ? 1 : -1;
+    return [...list].sort((a, b) => {
+      if (sortBy === 'invoiceNumber') return a.invoiceNumber.localeCompare(b.invoiceNumber) * factor;
+      if (sortBy === 'grandTotal') return (a.grandTotal - b.grandTotal) * factor;
+      return a.date.localeCompare(b.date) * factor;
+    });
+  }, [sales, search, methodFilter, statusFilter, dateFilter, sortBy, sortDir]);
+
+  const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
+
+  const toggleSort = (col: typeof sortBy) => {
+    if (sortBy === col) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else {
+      setSortBy(col);
+      setSortDir('desc');
+    }
+    setPage(1);
+  };
 
   const handleConfirmReturn = (e: React.FormEvent) => {
     e.preventDefault();
@@ -50,42 +102,59 @@ export const SalesPage: React.FC = () => {
   };
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="font-display text-xl font-bold text-slate-900 dark:text-slate-100">
-            Sales & Invoices ({filtered.length})
-          </h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            Review completed invoices, reprint customer receipts, and initiate returns
-          </p>
-        </div>
+    <div className="space-y-6">
+      <PageHeader
+        title={`Sales & Invoices (${filtered.length})`}
+        description="Review completed invoices, settle pending credit bills, reprint customer receipts, and initiate returns"
+        actions={
+          <button type="button" onClick={() => setActiveRoute('pos')} className="pms-btn-primary">
+            New POS Sale
+          </button>
+        }
+      />
 
-        <button
-          type="button"
-          onClick={() => setActiveRoute('pos')}
-          className="rounded-lg bg-teal-700 px-3.5 py-2 text-xs font-medium text-white hover:bg-teal-800 dark:bg-teal-600"
-        >
-          New POS Sale
-        </button>
+      {/* Summary KPI Strip */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <KpiCard label="Total Invoices" value={summary.totalCount} icon={Receipt} tone="slate" />
+        <KpiCard
+          label="Paid Revenue"
+          value={formatCurrencyExact(summary.paidTotal, settings.currencySymbol)}
+          icon={DollarSign}
+          tone="emerald"
+        />
+        <KpiCard
+          label="Credit Pending"
+          value={formatCurrencyExact(summary.pendingTotal, settings.currencySymbol)}
+          icon={Clock}
+          tone="amber"
+        />
+        <KpiCard
+          label="Refunded Total"
+          value={formatCurrencyExact(summary.refundedTotal, settings.currencySymbol)}
+          icon={RotateCcw}
+          tone="red"
+        />
       </div>
 
       {/* Filters */}
-      <div className="grid grid-cols-1 gap-3 rounded-xl border border-slate-200 bg-white p-4 sm:grid-cols-4 dark:border-slate-800 dark:bg-slate-900">
-        <div className="relative sm:col-span-2">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          <input
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search invoice # or customer name..."
-            className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-xs dark:border-slate-700 dark:bg-slate-800"
-          />
-        </div>
+      <div className="pms-card grid grid-cols-1 gap-3.5 p-4 sm:grid-cols-5">
+        <SearchInput
+          value={search}
+          onValueChange={(val) => {
+            setSearch(val);
+            setPage(1);
+          }}
+          placeholder="Search invoice #, customer or cashier..."
+          containerClassName="sm:col-span-2"
+        />
         <select
           value={methodFilter}
-          onChange={(e) => setMethodFilter(e.target.value as 'All' | PaymentMethod)}
-          className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-800"
+          onChange={(e) => {
+            setMethodFilter(e.target.value as 'All' | PaymentMethod);
+            setPage(1);
+          }}
+          aria-label="Filter by payment method"
+          className="pms-select"
         >
           <option value="All">All Payment Methods</option>
           <option value="Cash">Cash</option>
@@ -93,84 +162,156 @@ export const SalesPage: React.FC = () => {
           <option value="Bank Transfer">Bank Transfer</option>
           <option value="Other">Other</option>
         </select>
+        <select
+          value={statusFilter}
+          onChange={(e) => {
+            setStatusFilter(e.target.value as 'All' | PaymentStatus);
+            setPage(1);
+          }}
+          aria-label="Filter by payment status"
+          className="pms-select"
+        >
+          <option value="All">All Statuses</option>
+          <option value="Paid">Paid</option>
+          <option value="Pending">Pending</option>
+          <option value="Partial">Partial</option>
+          <option value="Refunded">Refunded</option>
+        </select>
         <input
           type="date"
           value={dateFilter}
-          onChange={(e) => setDateFilter(e.target.value)}
+          onChange={(e) => {
+            setDateFilter(e.target.value);
+            setPage(1);
+          }}
           aria-label="Filter by invoice date"
-          className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-800"
+          className="pms-input"
         />
       </div>
 
       {/* Table */}
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead>
-              <tr className="border-b border-slate-200 bg-slate-50/70 text-slate-500 dark:border-slate-800 dark:bg-slate-800/40">
-                <th className="px-4 py-3 font-medium">Invoice #</th>
-                <th className="px-3 py-3 font-medium">Date & Cashier</th>
-                <th className="px-3 py-3 font-medium">Customer</th>
-                <th className="px-3 py-3 font-medium">Payment</th>
-                <th className="px-3 py-3 text-right font-medium">Total</th>
-                <th className="px-3 py-3 font-medium">Status</th>
-                <th className="px-4 py-3 text-right font-medium">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {filtered.map((s) => (
-                <tr key={s.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40">
-                  <td className="px-4 py-3 font-mono font-semibold text-slate-900 dark:text-slate-100">
-                    {s.invoiceNumber}
-                  </td>
-                  <td className="px-3 py-3">
-                    <p>{formatDateTime(s.date)}</p>
-                    <p className="text-[11px] text-slate-400">Cashier: {s.cashierName}</p>
-                  </td>
-                  <td className="px-3 py-3 font-medium">{s.customerName}</td>
-                  <td className="px-3 py-3 text-slate-600 dark:text-slate-400">{s.paymentMethod}</td>
-                  <td className="px-3 py-3 text-right font-mono font-semibold tabular-nums">
-                    {formatCurrencyExact(s.grandTotal, settings.currencySymbol)}
-                  </td>
-                  <td className="px-3 py-3">
-                    <StatusText
-                      label={s.paymentStatus}
-                      tone={
-                        s.paymentStatus === 'Paid'
-                          ? 'ok'
-                          : s.paymentStatus === 'Refunded'
-                          ? 'critical'
-                          : 'warning'
-                      }
-                    />
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <div className="inline-flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setPrintSale(s)}
-                        className="inline-flex items-center gap-1 rounded border border-slate-200 px-2 py-1 text-[11px] font-medium hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
-                      >
-                        <Printer className="h-3 w-3" />
-                        <span>Invoice</span>
-                      </button>
-                      {s.paymentStatus !== 'Refunded' && (
+      <div className="pms-card overflow-hidden">
+        {paged.length === 0 ? (
+          <EmptyState
+            icon={ReceiptText}
+            title="No sales invoices found"
+            description="No invoices matched your search or payment filters."
+            actionLabel="Reset Filters"
+            onAction={() => {
+              setSearch('');
+              setMethodFilter('All');
+              setStatusFilter('All');
+              setDateFilter('');
+              setPage(1);
+            }}
+          />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50/70 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-400">
+                  <th className="px-5 py-3.5">
+                    <button
+                      type="button"
+                      onClick={() => toggleSort('invoiceNumber')}
+                      className="inline-flex items-center gap-1.5 hover:text-slate-900 dark:hover:text-slate-100"
+                    >
+                      <span>Invoice #</span>
+                      <ArrowUpDown className="h-3.5 w-3.5" />
+                    </button>
+                  </th>
+                  <th className="px-4 py-3.5">
+                    <button
+                      type="button"
+                      onClick={() => toggleSort('date')}
+                      className="inline-flex items-center gap-1.5 hover:text-slate-900 dark:hover:text-slate-100"
+                    >
+                      <span>Date & Cashier</span>
+                      <ArrowUpDown className="h-3.5 w-3.5" />
+                    </button>
+                  </th>
+                  <th className="px-4 py-3.5">Customer</th>
+                  <th className="px-4 py-3.5">Payment</th>
+                  <th className="px-4 py-3.5 text-right">
+                    <button
+                      type="button"
+                      onClick={() => toggleSort('grandTotal')}
+                      className="inline-flex items-center gap-1.5 hover:text-slate-900 dark:hover:text-slate-100"
+                    >
+                      <span>Total</span>
+                      <ArrowUpDown className="h-3.5 w-3.5" />
+                    </button>
+                  </th>
+                  <th className="px-4 py-3.5">Status</th>
+                  <th className="px-5 py-3.5 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {paged.map((s) => (
+                  <tr key={s.id} className="transition-colors hover:bg-slate-50/75 dark:hover:bg-slate-800/40">
+                    <td className="px-5 py-3.5 font-mono font-semibold text-slate-900 dark:text-slate-100">
+                      {s.invoiceNumber}
+                    </td>
+                    <td className="px-4 py-3.5">
+                      <p className="text-slate-800 dark:text-slate-200">{formatDateTime(s.date)}</p>
+                      <p className="text-xs text-slate-400">Cashier: {s.cashierName}</p>
+                    </td>
+                    <td className="px-4 py-3.5 font-medium text-slate-800 dark:text-slate-200">{s.customerName}</td>
+                    <td className="px-4 py-3.5 text-slate-600 dark:text-slate-400">{s.paymentMethod}</td>
+                    <td className="px-4 py-3.5 text-right font-mono font-semibold tabular-nums">
+                      {formatCurrencyExact(s.grandTotal, settings.currencySymbol)}
+                    </td>
+                    <td className="px-4 py-3.5">
+                      <StatusText
+                        label={s.paymentStatus}
+                        tone={
+                          s.paymentStatus === 'Paid'
+                            ? 'ok'
+                            : s.paymentStatus === 'Refunded'
+                            ? 'critical'
+                            : 'warning'
+                        }
+                      />
+                    </td>
+                    <td className="px-5 py-3.5 text-right">
+                      <div className="inline-flex items-center gap-1.5">
+                        {(s.paymentStatus === 'Pending' || s.paymentStatus === 'Partial') && (
+                          <button
+                            type="button"
+                            onClick={() => updateSalePaymentStatus(s.id, 'Paid')}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50/60 px-2.5 py-1.5 text-xs font-medium text-emerald-700 transition-colors hover:bg-emerald-100 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-400"
+                          >
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            <span>Mark Paid</span>
+                          </button>
+                        )}
                         <button
                           type="button"
-                          onClick={() => setReturnTarget(s)}
-                          className="inline-flex items-center gap-1 rounded border border-slate-200 px-2 py-1 text-[11px] font-medium text-amber-700 hover:bg-amber-50 dark:border-slate-700 dark:text-amber-400 dark:hover:bg-amber-950/30"
+                          onClick={() => setPrintSale(s)}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
                         >
-                          <RotateCcw className="h-3 w-3" />
-                          <span>Return</span>
+                          <Printer className="h-3.5 w-3.5" />
+                          <span>Invoice</span>
                         </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                        {s.paymentStatus !== 'Refunded' && (
+                          <button
+                            type="button"
+                            onClick={() => setReturnTarget(s)}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-50 dark:border-slate-700 dark:text-amber-400 dark:hover:bg-amber-950/30"
+                          >
+                            <RotateCcw className="h-3.5 w-3.5" />
+                            <span>Return</span>
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <PaginationBar page={page} pageSize={pageSize} total={filtered.length} onPageChange={setPage} />
       </div>
 
       {/* Return Modal */}
@@ -181,18 +322,18 @@ export const SalesPage: React.FC = () => {
         subtitle={`Full refund of ${formatCurrencyExact(returnTarget?.grandTotal ?? 0, settings.currencySymbol)}`}
         size="sm"
       >
-        <form onSubmit={handleConfirmReturn} className="space-y-4 text-xs">
+        <form onSubmit={handleConfirmReturn} className="space-y-4">
           <div>
-            <label className="mb-1 block font-medium">Return Reason *</label>
+            <label className="pms-label">Return Reason *</label>
             <textarea
               rows={2}
               required
               value={returnReason}
               onChange={(e) => setReturnReason(e.target.value)}
-              className="w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700 dark:bg-slate-800"
+              className="pms-textarea"
             />
           </div>
-          <label className="flex items-center gap-2 font-medium">
+          <label className="flex items-center gap-2.5 text-sm font-medium text-slate-700 dark:text-slate-300">
             <input
               type="checkbox"
               checked={restockable}
@@ -201,15 +342,11 @@ export const SalesPage: React.FC = () => {
             />
             <span>Sealed & Resalable — Return quantities back to inventory</span>
           </label>
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setReturnTarget(null)}
-              className="rounded-lg border border-slate-200 px-4 py-2 font-medium dark:border-slate-700"
-            >
+          <div className="flex justify-end gap-2.5 pt-2">
+            <button type="button" onClick={() => setReturnTarget(null)} className="pms-btn-secondary">
               Cancel
             </button>
-            <button type="submit" className="rounded-lg bg-teal-700 px-4 py-2 font-medium text-white hover:bg-teal-800">
+            <button type="submit" className="pms-btn-primary">
               Confirm Refund
             </button>
           </div>

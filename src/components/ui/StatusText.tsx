@@ -28,8 +28,8 @@ export const StatusText: React.FC<StatusTextProps> = ({ label, tone, showIcon = 
       : Clock;
 
   return (
-    <span className={`inline-flex items-center gap-1.5 text-xs font-medium whitespace-nowrap ${toneClasses[tone]}`}>
-      {showIcon && <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
+    <span className={`inline-flex items-center gap-1.5 text-[13px] font-medium whitespace-nowrap ${toneClasses[tone]}`}>
+      {showIcon && <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />}
       <span>{label}</span>
     </span>
   );
