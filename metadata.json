@@ -1,0 +1,6 @@
+{
+  "name": "PMS — Pharmacy Management System",
+  "description": "Enterprise-grade Pharmacy Management System featuring POS, Medicine Catalog, Inventory & Batch Tracking, Expiry Control, Prescriptions, Suppliers, Purchases, Staff RBAC, and Financial Analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
